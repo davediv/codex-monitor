@@ -10,6 +10,13 @@
 	"observability": {
 		"enabled": true
 	},
+	"kv_namespaces": [
+		{
+			"binding": "CODEX_RELEASE_CACHE",
+			"id": "3e7d52f1d28946da8f0889944e4fb6df",
+			"preview_id": "3e7d52f1d28946da8f0889944e4fb6df"
+		}
+	],
 	/**
 	 * Smart Placement
 	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
@@ -42,7 +49,7 @@
 	// "services": [{ "binding": "MY_SERVICE", "service": "my-service" }]
 	"triggers": {
 		"crons": [
-			"* * * * *"
+			"0 * * * *"
 		]
 	}
 }
