@@ -207,7 +207,7 @@ async function safeText(resp: Response): Promise<string> {
 }
 
 function createReleaseCache(env: Env): ReleaseCache {
-	const binding = env.RELEASE_CACHE;
+	const binding = env.CODEX_RELEASE_CACHE;
 	if (binding) {
 		return {
 			async getState() {
@@ -233,7 +233,7 @@ function createReleaseCache(env: Env): ReleaseCache {
 	const state = (globalWithState[RUNTIME_CACHE_STATE_KEY] ??= {});
 	if (!state.warnedMissingBinding) {
 		console.warn(
-			'RELEASE_CACHE binding not configured; falling back to in-memory cache. Configure a KV namespace to persist release tracking across runs.',
+			'CODEX_RELEASE_CACHE binding not configured; falling back to in-memory cache. Configure a KV namespace to persist release tracking across runs.',
 		);
 		state.warnedMissingBinding = true;
 	}
