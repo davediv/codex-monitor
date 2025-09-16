@@ -3,7 +3,7 @@
 // Runtime types generated with workerd@1.20250906.0 2025-09-13 
 declare namespace Cloudflare {
 	interface Env {
-		RELEASE_CACHE: KVNamespace;
+		RELEASE_CACHE?: KVNamespace;
 		TELEGRAM_BOT_TOKEN: string;
 		TELEGRAM_CHAT_ID: string;
 		TELEGRAM_THREAD_ID?: string;

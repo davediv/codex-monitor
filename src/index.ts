@@ -1,6 +1,7 @@
 const RELEASE_CACHE_KEY = 'latest-github-release-id';
 const RELEASE_CACHE_ETAG_KEY = 'github-release-etag';
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/openai/codex/releases?per_page=10';
+const RUNTIME_CACHE_STATE_KEY = '__codex_monitor_release_state__';
 
 interface GitHubRelease {
 	id: number;
@@ -31,12 +32,21 @@ const worker: ExportedHandler<Env> = {
 	},
 };
 
+interface ReleaseCacheState {
+	latestId?: string;
+	etag?: string;
+	warnedMissingBinding?: boolean;
+}
+
+interface ReleaseCache {
+	getState(): Promise<{ latestId: string | null; etag: string | null }>;
+	setState(id: string, etag?: string | null): Promise<void>;
+}
+
 async function runMonitor(env: Env) {
 	try {
-		const [cachedId, cachedEtag] = await Promise.all([
-			env.RELEASE_CACHE.get(RELEASE_CACHE_KEY),
-			env.RELEASE_CACHE.get(RELEASE_CACHE_ETAG_KEY),
-		]);
+		const cache = createReleaseCache(env);
+		const { latestId: cachedId, etag: cachedEtag } = await cache.getState();
 
 		const { releases, etag, notModified } = await fetchLatestReleases(env, cachedEtag ?? undefined);
 		if (notModified) {
@@ -50,13 +60,14 @@ async function runMonitor(env: Env) {
 		}
 
 		if (!cachedId) {
-			await primeCache(env, releases[0], etag);
+			await cache.setState(releases[0].id.toString(), etag);
 			console.log('Cache primed with release id', releases[0].id);
 			return;
 		}
 
 		const newReleases = collectNewReleases(releases, cachedId);
 		if (!newReleases.length) {
+			await cache.setState(releases[0].id.toString(), etag);
 			console.log('No new releases detected.');
 			return;
 		}
@@ -65,7 +76,7 @@ async function runMonitor(env: Env) {
 			await notifyTelegram(env, release);
 		}
 
-		await updateCache(env, releases[0], etag);
+		await cache.setState(releases[0].id.toString(), etag);
 		console.log('Cache updated to release id', releases[0].id);
 	} catch (error) {
 		console.error('Release monitor run failed', error);
@@ -108,22 +119,6 @@ async function fetchLatestReleases(env: Env, etag?: string): Promise<{
 	const responseEtag = resp.headers.get('etag') ?? undefined;
 	const payload = (await resp.json()) as GitHubRelease[];
 	return { releases: payload.filter((release) => !release.draft), etag: responseEtag, notModified: false };
-}
-
-async function primeCache(env: Env, release: GitHubRelease, etag?: string | null) {
-	const operations: Promise<void>[] = [env.RELEASE_CACHE.put(RELEASE_CACHE_KEY, release.id.toString())];
-	if (etag) {
-		operations.push(env.RELEASE_CACHE.put(RELEASE_CACHE_ETAG_KEY, etag));
-	}
-	await Promise.all(operations);
-}
-
-async function updateCache(env: Env, release: GitHubRelease, etag?: string | null) {
-	const operations: Promise<void>[] = [env.RELEASE_CACHE.put(RELEASE_CACHE_KEY, release.id.toString())];
-	if (etag) {
-		operations.push(env.RELEASE_CACHE.put(RELEASE_CACHE_ETAG_KEY, etag));
-	}
-	await Promise.all(operations);
 }
 
 function collectNewReleases(releases: GitHubRelease[], cachedId: string): GitHubRelease[] {
@@ -209,6 +204,52 @@ async function safeText(resp: Response): Promise<string> {
 		console.warn('Failed to read response text', error);
 		return '<no body>';
 	}
+}
+
+function createReleaseCache(env: Env): ReleaseCache {
+	const binding = env.RELEASE_CACHE;
+	if (binding) {
+		return {
+			async getState() {
+				const [latestId, etag] = await Promise.all([
+					binding.get(RELEASE_CACHE_KEY),
+					binding.get(RELEASE_CACHE_ETAG_KEY),
+				]);
+				return { latestId, etag };
+			},
+			async setState(id, etag) {
+				const operations: Promise<void>[] = [binding.put(RELEASE_CACHE_KEY, id)];
+				if (etag) {
+					operations.push(binding.put(RELEASE_CACHE_ETAG_KEY, etag));
+				} else {
+					operations.push(binding.delete(RELEASE_CACHE_ETAG_KEY));
+				}
+				await Promise.all(operations);
+			},
+		};
+	}
+
+	const globalWithState = globalThis as typeof globalThis & { [RUNTIME_CACHE_STATE_KEY]?: ReleaseCacheState };
+	const state = (globalWithState[RUNTIME_CACHE_STATE_KEY] ??= {});
+	if (!state.warnedMissingBinding) {
+		console.warn(
+			'RELEASE_CACHE binding not configured; falling back to in-memory cache. Configure a KV namespace to persist release tracking across runs.',
+		);
+		state.warnedMissingBinding = true;
+	}
+
+	return {
+		async getState() {
+			return {
+				latestId: state.latestId ?? null,
+				etag: state.etag ?? null,
+			};
+		},
+		async setState(id, etag) {
+			state.latestId = id;
+			state.etag = etag ?? undefined;
+		},
+	};
 }
 
 export default worker;
