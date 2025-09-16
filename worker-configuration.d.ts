@@ -7,6 +7,7 @@ declare namespace Cloudflare {
 		TELEGRAM_BOT_TOKEN: string;
 		TELEGRAM_CHAT_ID: string;
 		TELEGRAM_THREAD_ID?: string;
+		GITHUB_TOKEN?: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

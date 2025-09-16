@@ -1,4 +1,5 @@
 const RELEASE_CACHE_KEY = 'latest-github-release-id';
+const RELEASE_CACHE_ETAG_KEY = 'github-release-etag';
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/openai/codex/releases?per_page=10';
 
 interface GitHubRelease {
@@ -32,15 +33,24 @@ const worker: ExportedHandler<Env> = {
 
 async function runMonitor(env: Env) {
 	try {
-		const releases = await fetchLatestReleases();
+		const [cachedId, cachedEtag] = await Promise.all([
+			env.RELEASE_CACHE.get(RELEASE_CACHE_KEY),
+			env.RELEASE_CACHE.get(RELEASE_CACHE_ETAG_KEY),
+		]);
+
+		const { releases, etag, notModified } = await fetchLatestReleases(env, cachedEtag ?? undefined);
+		if (notModified) {
+			console.log('GitHub reported no changes since previous poll.');
+			return;
+		}
+
 		if (!releases.length) {
 			console.log('No releases returned from GitHub.');
 			return;
 		}
 
-		const cachedId = await env.RELEASE_CACHE.get(RELEASE_CACHE_KEY);
 		if (!cachedId) {
-			await env.RELEASE_CACHE.put(RELEASE_CACHE_KEY, releases[0].id.toString());
+			await primeCache(env, releases[0], etag);
 			console.log('Cache primed with release id', releases[0].id);
 			return;
 		}
@@ -55,7 +65,7 @@ async function runMonitor(env: Env) {
 			await notifyTelegram(env, release);
 		}
 
-		await env.RELEASE_CACHE.put(RELEASE_CACHE_KEY, releases[0].id.toString());
+		await updateCache(env, releases[0], etag);
 		console.log('Cache updated to release id', releases[0].id);
 	} catch (error) {
 		console.error('Release monitor run failed', error);
@@ -63,21 +73,57 @@ async function runMonitor(env: Env) {
 	}
 }
 
-async function fetchLatestReleases(): Promise<GitHubRelease[]> {
-	const resp = await fetch(GITHUB_RELEASES_URL, {
-		headers: {
-			Accept: 'application/vnd.github+json',
-			'User-Agent': 'codex-monitor-worker/1.0',
-		},
-	});
+async function fetchLatestReleases(env: Env, etag?: string): Promise<{
+	releases: GitHubRelease[];
+	etag?: string;
+	notModified: boolean;
+}> {
+	const headers: Record<string, string> = {
+		Accept: 'application/vnd.github+json',
+		'User-Agent': 'codex-monitor-worker/1.0',
+	};
+	const token = env.GITHUB_TOKEN?.trim();
+	if (token) {
+		headers.Authorization = `Bearer ${token}`;
+	}
+	if (etag) {
+		headers['If-None-Match'] = etag;
+	}
+
+	const resp = await fetch(GITHUB_RELEASES_URL, { headers });
+	if (resp.status === 304) {
+		return { releases: [], etag, notModified: true };
+	}
 
 	if (!resp.ok) {
 		const message = await safeText(resp);
+		if (resp.status === 403) {
+			throw new Error(
+				`GitHub releases request failed: ${resp.status} ${message}. Provide a personal access token via GITHUB_TOKEN to increase rate limits.`,
+			);
+		}
 		throw new Error(`GitHub releases request failed: ${resp.status} ${message}`);
 	}
 
+	const responseEtag = resp.headers.get('etag') ?? undefined;
 	const payload = (await resp.json()) as GitHubRelease[];
-	return payload.filter((release) => !release.draft);
+	return { releases: payload.filter((release) => !release.draft), etag: responseEtag, notModified: false };
+}
+
+async function primeCache(env: Env, release: GitHubRelease, etag?: string | null) {
+	const operations: Promise<void>[] = [env.RELEASE_CACHE.put(RELEASE_CACHE_KEY, release.id.toString())];
+	if (etag) {
+		operations.push(env.RELEASE_CACHE.put(RELEASE_CACHE_ETAG_KEY, etag));
+	}
+	await Promise.all(operations);
+}
+
+async function updateCache(env: Env, release: GitHubRelease, etag?: string | null) {
+	const operations: Promise<void>[] = [env.RELEASE_CACHE.put(RELEASE_CACHE_KEY, release.id.toString())];
+	if (etag) {
+		operations.push(env.RELEASE_CACHE.put(RELEASE_CACHE_ETAG_KEY, etag));
+	}
+	await Promise.all(operations);
 }
 
 function collectNewReleases(releases: GitHubRelease[], cachedId: string): GitHubRelease[] {
